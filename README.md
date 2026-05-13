@@ -25,6 +25,18 @@ runai submit \
 
 
 ```
+runai submit \
+  --name dllm-sampler \
+  --image registry.rcp.epfl.ch/dllm-sampling/my-toolbox:v0.2 \
+  --gpu 1 \
+  --existing-pvc claimname=course-ee-628-scratch,path=/scratch \
+  --existing-pvc claimname=home,path=/home/mnafez \
+  --command -- bash -c "source /scratch/mnafez/bootstrap.sh;sleep 28800"
+```
+
+
+
+```
 runai bash dllm-sampler
 ```
 
@@ -40,4 +52,11 @@ runai suspend dllm-sampler
 
 ```
 runai resume dllm-sampler
+```
+
+
+
+```
+source /scratch/mnafez/miniconda3/bin/activate
+conda activate dllm
 ```
