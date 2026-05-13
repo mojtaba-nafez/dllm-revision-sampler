@@ -422,3 +422,362 @@ class MDLMSampler(BaseSampler):
             return x
         else:
             return BaseSamplerOutput(sequences=x, histories=histories)
+
+    @torch.no_grad()
+    def sampling_revising_by_remasking(
+        self,
+        inputs: list[torch.Tensor | list],
+        config: MDLMSamplerConfig | None = None,
+        **kwargs,
+    ) -> BaseSamplerOutput | torch.Tensor:
+        """
+        Generate text using masked diffusion language modeling.
+
+        Iteratively unmasks tokens over multiple diffusion steps, starting from
+        fully masked sequences appended to the input prompts.
+
+        Args:
+            inputs: List of input prompts (token tensors or lists of token IDs).
+            config: Sampler configuration, or None to use defaults.
+            **kwargs: Override specific config parameters.
+
+        Returns:
+            SamplerOutput with generated sequences, or raw tensor if return_dict=False.
+        """
+        if config is None:
+            config = MDLMSamplerConfig()
+
+        # ----- pull args from config, allow kwargs to override -----
+        steps = kwargs.get("steps", config.steps)
+        max_new_tokens = kwargs.get("max_new_tokens", config.max_new_tokens)
+        max_length = kwargs.get("max_length", config.max_length)
+        block_size = kwargs.get("block_size", config.block_size)
+        temperature = kwargs.get("temperature", config.temperature)
+        cfg_scale = kwargs.get("cfg_scale", config.cfg_scale)
+        cfg_keep_tokens = kwargs.get("cfg_keep_tokens", config.cfg_keep_tokens)
+        remasking = kwargs.get("remasking", config.remasking)
+        suppress_tokens = kwargs.get("suppress_tokens", config.suppress_tokens)
+        stochastic_transfer = kwargs.get(
+            "stochastic_transfer", config.stochastic_transfer
+        )
+        return_dict = kwargs.get("return_dict", config.return_dict)
+        right_shift_logits = kwargs.get("right_shift_logits", config.right_shift_logits)
+        begin_suppress_tokens = kwargs.get(
+            "begin_suppress_tokens", config.begin_suppress_tokens
+        )
+
+        assert 1 <= block_size
+        assert 1 <= steps
+        mask_id = self.tokenizer.mask_token_id
+        bos_id = self.tokenizer.bos_token_id
+        eos_id = self.tokenizer.eos_token_id
+
+        # ----- Shape bookkeeping: per-sample prompt lengths and final canvas width -----
+        # If right_shift_logits is true and a sequence has length 0, replace that sequence with [eos].
+        if right_shift_logits:
+            inputs = [
+                [bos_id] if isinstance(p, list) and len(p) == 0 else p for p in inputs
+            ]
+
+        if isinstance(inputs[0], list):
+            inputs = [
+                torch.as_tensor(p, dtype=torch.long, device=self.model.device)
+                for p in inputs
+            ]
+        prompt_lens = [p.shape[0] for p in inputs]
+
+        if max_new_tokens:
+            max_length = max_new_tokens + max(prompt_lens)
+        else:
+            max_new_tokens = max_length - max(prompt_lens)
+
+        B = len(inputs)
+        T = max_length
+
+        # print(f"----------------------T, max_length, max_new_tokens-------------------")
+        # print(T, max_length, max_new_tokens) # 171 171 128
+        # print(f"----------------------inputs-------------------")
+        # print(len(inputs), inputs[0].shape, inputs) # 1 torch.Size([43]) [tensor([  1,  38,  39,  ...,  13,  11])]
+
+
+        # ----- Initialize canvas with EOS, copy inputs, and append mask tail -----
+        x = torch.full((B, T), eos_id, dtype=torch.long, device=self.model.device)
+        for i, p in enumerate(inputs):
+            x[i, : prompt_lens[i]] = p  # keep original prompt tokens
+            x[i, prompt_lens[i] : prompt_lens[i] + max_new_tokens] = (
+                mask_id  # append `max_new_tokens` masks to be generated
+            )
+
+        # print(f"----------------------x-------------------")
+        # print(x.shape, x) # torch.Size([1, 171]) tensor([[  1,  38,  39,  ..., 50257, 50257, 50257]])
+
+        attention_mask = torch.zeros((B, T), dtype=torch.long, device=self.model.device)
+        for i, pl in enumerate(prompt_lens):
+            valid_end = min(pl + max_new_tokens, T)
+            attention_mask[i, :valid_end] = 1
+
+        # print(f"----------------------attention_mask-------------------")
+        # print(attention_mask.shape, attention_mask) # torch.Size([1, 171]) tensor([[1, 1, 1,  ..., 1, 1, 1]])
+
+        # Tokens that were *given* at the start (non-mask, non-EOS).
+        # These will be masked in the unconditional forward pass for CFG.
+        # Tokens from `cfg_keep_tokens` should *not* be treated as "given" for CFG
+        unmasked_index = (x != mask_id) & attention_mask.bool()
+        if not (cfg_keep_tokens is None or len(cfg_keep_tokens) == 0):
+            keep_mask = torch.isin(
+                x, torch.as_tensor(cfg_keep_tokens, device=self.model.device)
+            )
+            unmasked_index = unmasked_index & ~keep_mask
+
+        # print(f"----------------------unmasked_index-------------------")
+        # print(unmasked_index.shape, unmasked_index) # torch.Size([1, 171]) tensor([[ True,  True,  True,  ..., False, False, False]])
+
+        # ----- Block scheduling over the appended mask tail -----
+        num_blocks = math.ceil(max_new_tokens / block_size)
+        steps = math.ceil(steps / num_blocks)  # per-block step budget
+        histories = [x.clone()] if return_dict else None
+
+        # print(f"----------------------block_size, num_blocks, steps-------------------")
+        # print(block_size, num_blocks, steps) # 32 4 32
+
+        for b in range(num_blocks):
+            # Build a per-sample mask *within this block* (aligned to each prompt's tail)
+            block_mask_index = torch.zeros(
+                (B, block_size), dtype=torch.bool, device=x.device
+            )
+            widths = []
+            block_starts = []
+            block_ends = []
+            for j in range(B):
+                start = prompt_lens[j] + b * block_size
+                end = min(start + block_size, prompt_lens[j] + max_new_tokens, T)
+                width = max(0, end - start)
+                widths.append(width)
+                block_starts.append(start)
+                block_ends.append(end)
+                if width > 0:
+                    block_mask_index[j, :width] = x[j, start:end] == mask_id
+
+            # Decide how many tokens to reveal per step in this block
+            num_transfer_tokens = get_num_transfer_tokens(
+                mask_index=block_mask_index,
+                steps=steps,
+                scheduler=self.scheduler,
+                stochastic=stochastic_transfer,
+            )
+            # print(f"----------------------num_transfer_tokens (block {b})-------------------")
+            # print(num_transfer_tokens.shape, num_transfer_tokens) # torch.Size([1, 32]) tensor([[1,  ..., 1, 1, 1]])
+
+            # Some steps may be skipped if there are no transfers
+            effective_steps = num_transfer_tokens.size(1)
+
+            # ----- Iterative reveal inside the current block -----
+            for i in range(effective_steps):
+                mask_index = x == mask_id  # current global mask map
+
+                # print(f"----------------------cfg_scale-------------------")
+                # print(cfg_scale) # 0.0
+                # Optional CFG: second forward where original prompt tokens are masked out
+                if cfg_scale > 0.0:
+                    un_x = x.clone()
+                    un_x[unmasked_index] = mask_id
+                    x_ = torch.cat([x, un_x], dim=0)
+                    logits = self.model(
+                        x_, attention_mask=attention_mask
+                    ).logits  # Use attention mask here
+                    logits, un_logits = torch.chunk(logits, 2, dim=0)
+                    logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
+                else:
+                    logits = self.model(
+                        x, attention_mask=attention_mask
+                    ).logits  # Use attention mask here
+
+                if suppress_tokens is not None and len(suppress_tokens) > 0:
+                    for token_id in suppress_tokens:
+                        logits[:, :, token_id] = -torch.inf
+
+                if right_shift_logits:
+                    logits = torch.cat([logits[:, :1], logits[:, :-1]], dim=1)
+
+                # Argmax decoding with optional Gumbel-Max noise for exploration
+                logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
+                x0 = torch.argmax(
+                    logits_with_noise, dim=-1
+                )  # [B, T] predicted token ids
+                x0_raw = torch.argmax(logits_with_noise, dim=-1)  # save raw predictions BEFORE the where-clamp
+
+                if begin_suppress_tokens is not None and len(begin_suppress_tokens) > 0:
+                    for token_id in begin_suppress_tokens:
+                        logits[:, :, token_id] = -torch.inf
+
+                # Per-position confidence used to pick which masks to commit this step
+                if remasking == "low_confidence":
+                    p = F.softmax(logits, dim=-1)
+                    x0_p = torch.squeeze(
+                        torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1
+                    )  # [B, T] confidence of predicted token
+                elif remasking == "random":
+                    x0_p = torch.rand(
+                        (x0.shape[0], x0.shape[1]), device=x0.device
+                    )  # random scores
+                else:
+                    raise NotImplementedError(remasking)
+
+                # Restrict selection window to the *current block's* tail region
+                for j in range(B):
+                    x0_p[j, prompt_lens[j] + (b + 1) * block_size :] = -np.inf
+
+                # Only allow updates at currently masked positions; keep others fixed
+                x0 = torch.where(mask_index, x0, x)
+                confidence = torch.where(
+                    mask_index, x0_p, -np.inf
+                )  # consider masked positions only
+
+                # Pick exactly `num_transfer_tokens[j, i]` highest-confidence positions per sample
+                transfer_index = torch.zeros_like(
+                    x0, dtype=torch.bool, device=x0.device
+                )
+                for j in range(confidence.shape[0]):
+                    _, select_index = torch.topk(
+                        confidence[j], k=num_transfer_tokens[j, i]
+                    )
+                    transfer_index[j, select_index] = True
+
+                # Commit chosen predictions into the canvas
+                x[transfer_index] = x0[transfer_index]
+                if histories is not None:
+                    histories.append(x.clone())
+
+
+            # ===== PHASE 2: Multi-pass revision after block is fully unmasked =====
+            MAX_REVISIONS = 8
+            CONFIDENCE_THRESHOLD = 0.0
+            MAX_REVISION_PASSES = 20
+            revised_and_refilled = torch.zeros_like(x, dtype=torch.bool)  # ← uncomment
+    
+            # # precompute per-sample block boundaries
+            # block_starts = [b * block_size for _ in range(B)]
+            # block_ends = [min(b * block_size + widths[j], T) for j in range(B)]
+
+            forbidden_source_ids = [198, 13444, 14975, 126081, 91, 126080, 20679, 7351, 486, 27, 2983, 95591, 114654, 3583, 797, 3840, 68, 335, 598]
+            forbidden_target_ids = [198, 13444, 14975, 126081, 91, 126080, 20679, 7351, 486, 27, 2983, 95591, 114654, 3583, 797, 3840, 68, 335, 598]
+
+            for rev_pass in range(MAX_REVISION_PASSES):
+                pre_remask_tokens = x.clone()  # ← ADD THIS LINE
+                logits = self.model(x, attention_mask=attention_mask, revise_step=True, block_starts=block_starts, block_ends=block_ends).logits
+                p = F.softmax(logits, dim=-1)
+                x0_rev = torch.argmax(logits, dim=-1)
+                x0_p_rev = torch.gather(p, dim=-1, index=x0_rev.unsqueeze(-1)).squeeze(-1)
+
+                revision_index = torch.zeros_like(x, dtype=torch.bool)
+
+                for j in range(B):
+                    block_start = block_starts[j]  # ← correct
+                    block_end = block_ends[j]      # ← correct
+
+                    candidate_mask = torch.zeros(T, dtype=torch.bool, device=x.device)
+                    candidate_mask[block_start:block_end] = True
+                    candidate_mask = candidate_mask & ~revised_and_refilled[j]
+
+                    if remasking == "low_confidence":
+                        disagree = candidate_mask & (x0_rev[j] != x[j]) & (x0_p_rev[j] > CONFIDENCE_THRESHOLD)
+                    else:
+                        disagree = candidate_mask & (x0_rev[j] != x[j])
+
+                    candidate_positions = disagree.nonzero(as_tuple=True)[0]
+                    if len(candidate_positions) == 0:
+                        continue
+
+                    keep = torch.ones(len(candidate_positions), dtype=torch.bool)
+                    for idx, pos in enumerate(candidate_positions):
+                        src = x[j, pos].item()
+                        tgt = x0_rev[j, pos].item()
+                        if src in forbidden_source_ids or tgt in forbidden_target_ids:
+                            keep[idx] = False
+                    candidate_positions = candidate_positions[keep]
+                    if len(candidate_positions) == 0:
+                        continue
+
+                    candidate_confidences = x0_p_rev[j, candidate_positions]
+
+                    rows = []
+                    for pos, new_conf in zip(candidate_positions, candidate_confidences):
+                        src_tid = x[j, pos].item()
+                        tgt_tid = x0_rev[j, pos].item()
+
+                        src_tok = self.tokenizer.decode([src_tid])
+                        tgt_tok = self.tokenizer.decode([tgt_tid])
+
+                        current_conf = p[j, pos, src_tid].item()
+
+                        rows.append((
+                            pos.item(),
+                            src_tok, src_tid,
+                            current_conf,
+                            tgt_tok, tgt_tid,
+                            new_conf.item()
+                        ))
+
+                    # Sort EXACTLY like selection logic
+                    rows.sort(key=lambda r: (-r[3] + r[6] * 1e-6), reverse=True)
+
+                    print(f"[Block {b} Revision pass {rev_pass}]")
+                    for pos, src_tok, src_tid, current_conf, tgt_tok, tgt_tid, new_conf in rows:
+                        print(
+                            f"  pos {pos}: '{src_tok}({src_tid})' p={current_conf:.3f} "
+                            f"→ '{tgt_tok}({tgt_tid})' p={new_conf:.3f}"
+                        )
+                    '''
+                    k = min(MAX_REVISIONS, len(candidate_positions))
+                    _, top_k = torch.topk(candidate_confidences, k=k)
+                    revision_index[j, candidate_positions[top_k]] = True
+                    '''
+                    # Sort by: (1) lowest current token confidence, (2) highest new token confidence as tiebreak
+                    current_confidences = torch.tensor(
+                        [p[j, pos, x[j, pos]].item() for pos in candidate_positions],
+                        device=x.device
+                    )
+                    new_confidences = x0_p_rev[j, candidate_positions]
+
+                    # Combined score: lowest current conf first (-current_conf), tiebreak by highest new conf
+                    combined_scores = -current_confidences + new_confidences * 1e-6
+
+                    k = min(MAX_REVISIONS, len(candidate_positions))
+                    _, top_k = torch.topk(combined_scores, k=k)
+                    revision_index[j, candidate_positions[top_k]] = True
+
+                if not revision_index.any():
+                    print(f"[Block {b}] Revision converged after {rev_pass + 1} pass(es)")
+                    break
+
+                x[revision_index] = mask_id
+                if histories is not None:
+                    histories.append(x.clone())
+
+                # Re-fill only within current block
+                refill_count = 0
+                refill_logits = self.model(x, attention_mask=attention_mask).logits
+                x0_refill = torch.argmax(refill_logits, dim=-1)
+                for j in range(B):
+                    block_start = block_starts[j]  # ← correct
+                    block_end = block_ends[j]      # ← correct
+                    for pos in range(block_start, block_end):
+                        if x[j, pos] == mask_id:
+                            # REPLACE WITH THIS:
+                            new_token = x0_refill[j, pos].item()
+                            original_token = pre_remask_tokens[j, pos].item()
+                            x[j, pos] = new_token
+                            if new_token == original_token:
+                                revised_and_refilled[j, pos] = True
+                            refill_count += 1
+                            print("Change: ", self.tokenizer.decode([original_token]), " -->  ", self.tokenizer.decode([new_token]))
+                if histories is not None:
+                    histories.append(x.clone())
+                print(f"[Block {b}] Refilled {refill_count} re-masked tokens")  # ← correct count
+                
+      
+
+        if not return_dict:
+            return x
+        else:
+            return BaseSamplerOutput(sequences=x, histories=histories)

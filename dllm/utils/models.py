@@ -63,9 +63,12 @@ def get_model(
     }
 
     try:
-        model = transformers.AutoModelForMaskedLM.from_pretrained(
-            model_name_or_path, **params
-        )
+        from dllm.pipelines.llada.models.modeling_llada import LLaDAModelLM
+        model = LLaDAModelLM.from_pretrained(model_name_or_path, **params)
+        print("Loaded model using LLaDAModelLM.from_pretrained")
+        # model = transformers.AutoModelForMaskedLM.from_pretrained(
+        #     model_name_or_path, **params
+        # )
     except Exception:
         model = transformers.AutoModel.from_pretrained(model_name_or_path, **params)
 

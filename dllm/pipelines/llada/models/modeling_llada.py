@@ -667,6 +667,7 @@ class LLaDABlock(nn.Module):
         attention_bias: Optional[torch.Tensor] = None,
         layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
+        revise_step:bool = False,
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         B, T, C = q.size()  # batch size, sequence length, d_model
         dtype = k.dtype
@@ -705,6 +706,25 @@ class LLaDABlock(nn.Module):
             attention_bias = self._cast_attn_bias(
                 attention_bias[:, :, key_len - query_len : key_len, :key_len], dtype
             )
+
+        if revise_step and (self.layer_id in [0]):
+            self_mask = torch.zeros(
+                (query_len, key_len),
+                device=q.device,
+                dtype=dtype,
+            )
+            # Important when using KV cache:
+            # query positions correspond to the last query_len positions in the key sequence.
+            diagonal_offset = key_len - query_len
+            self_mask.fill_diagonal_(0)
+            idx = torch.arange(query_len, device=q.device)
+            self_key_idx = idx + diagonal_offset
+            self_mask[idx, self_key_idx] = torch.finfo(dtype).min
+            self_mask = self_mask.view(1, 1, query_len, key_len)
+            if attention_bias is None:
+                attention_bias = self_mask
+            else:
+                attention_bias = attention_bias + self_mask
 
         # Get the attention scores.
         # shape: (B, nh, T, hs)
@@ -889,6 +909,7 @@ class LLaDALlamaBlock(LLaDABlock):
         attention_bias: Optional[torch.Tensor] = None,
         layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
+        revise_step: bool = False,
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         # Get query, key, value projections.
         # shape:
@@ -1241,6 +1262,9 @@ class LLaDAModel(LLaDAPreTrainedModel):
         use_cache: bool = False,
         last_logits_only: bool = False,
         output_hidden_states: Optional[bool] = None,
+        revise_step: bool = False,
+        block_starts: List[int] = None,
+        block_ends: List[int] = None,
     ) -> LLaDAOutput:
         """
         :param input_ids: A tensor of shape `(batch_size, seq_len)`.
@@ -1287,6 +1311,20 @@ class LLaDAModel(LLaDAPreTrainedModel):
         # Get embeddings of input.
         # shape: (batch_size, seq_len, d_model)
         x = self.transformer.wte(input_ids) if input_embeddings is None else input_embeddings  # type: ignore
+
+        mask_id = 126336
+        mask_weight = 0.48 # 0.43 # 0.43 # 0.59
+        if revise_step:
+            # print("Using revised forward step with mask weight", mask_weight)
+            not_already_masked = (input_ids != mask_id).unsqueeze(-1)
+            for i in range(batch_size):
+                not_already_masked[i, :block_starts[i], :] = False
+                not_already_masked[i, block_ends[i]:, :] = False
+            # print("block_starts, block_ends:", block_starts, block_ends)
+            mask_token_emb = self.transformer.wte.weight[mask_id]  # [D]
+            mixed_x = ((1 - mask_weight) * x) + (mask_weight * mask_token_emb.view(1, 1, -1))
+            x = torch.where(not_already_masked, mixed_x, x)
+
 
         if self.config.input_emb_norm:
             x = x * (self.config.d_model**0.5)
@@ -1381,7 +1419,7 @@ class LLaDAModel(LLaDAPreTrainedModel):
                     )
                 else:
                     # shape: (batch_size, seq_len, d_model)
-                    x, cache = block(x, attention_bias=attention_bias, layer_past=layer_past, use_cache=use_cache)
+                    x, cache = block(x, attention_bias=attention_bias, layer_past=layer_past, use_cache=use_cache, revise_step=revise_step)
                 if attn_key_values is not None:
                     assert cache is not None
                     attn_key_values.append(cache)
@@ -1475,6 +1513,9 @@ class LLaDAModelLM(LLaDAPreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[Cache] = None,  # This is a hack mitigation of an issue in transformers `4.39.x`
+        revise_step: bool = False,
+        block_starts: List[int] = None,
+        block_ends: List[int] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         if use_cache is None:
             use_cache = self.config.use_cache
@@ -1493,6 +1534,9 @@ class LLaDAModelLM(LLaDAPreTrainedModel):
             past_key_values=past_key_values,
             use_cache=use_cache,
             output_hidden_states=output_hidden_states,
+            revise_step=revise_step,
+            block_starts=block_starts,
+            block_ends=block_ends
         )
 
         logits = outputs.logits
