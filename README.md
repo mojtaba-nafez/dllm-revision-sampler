@@ -1,28 +1,8 @@
 
-# RCP Commands
-
-### Docker Setup
+# RCP Setup & Commands
 
 
-```
-ln -s /scratch/mnafez/ ~/scratch
-```
-
-
-### Intractive session  (28,800 ~ 8-hours)
-
-```
-runai submit \
-  --name dllm-sampler \
-  --image registry.rcp.epfl.ch/dllm-sampling/my-toolbox:v0.2 \
-  --gpu 1 \
-  --environment MY_ENV_VAR="A test ENV variable" \
-  --existing-pvc claimname=course-ee-628-scratch,path=/scratch \
-  --existing-pvc claimname=home,path=/home/mnafez \
-  --command \
-  -- /bin/bash -ic "sleep 28800"
-```
-
+### Intractive session  (8-hours)
 
 ```
 runai submit \
@@ -31,13 +11,22 @@ runai submit \
   --gpu 1 \
   --existing-pvc claimname=course-ee-628-scratch,path=/scratch \
   --existing-pvc claimname=home,path=/home/mnafez \
-  --command -- bash -c "source /scratch/mnafez/bootstrap.sh;sleep 28800"
+  --command -- bash /scratch/mnafez/dllm-revision-sampler/epfl-rcp-bootstrap.sh
 ```
 
+- Check [epfl-rcp-bootstrap.sh](epfl-rcp-bootstrap.sh) for: 
+  - 8h (Intractive session)
+  - Simlink for /scratch 
+  - Activate conda env by default
 
+### Runai Usefull Commands
+  
+```
+runai logs dllm-sampler
+```
 
 ```
-runai bash dllm-sampler
+runai bash dllm-sampler -- bash --login
 ```
 
 
