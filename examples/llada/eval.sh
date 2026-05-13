@@ -13,6 +13,7 @@ export TORCH_DISTRIBUTED_DEBUG=DETAIL       # Provide detailed logging for PyTor
 model_name_or_path="GSAI-ML/LLaDA-8B-Instruct"
 instruct=True
 num_gpu=1
+limit=30
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model_name_or_path)
@@ -21,6 +22,8 @@ while [[ $# -gt 0 ]]; do
       instruct="$2"; shift 2 ;;
     --num_gpu)
       num_gpu="$2"; shift 2 ;;
+    --limit)
+      limit="$2"; shift 2 ;;
     *) 
       echo "Error: Unknown argument: $1"; exit 1 ;;
   esac
@@ -81,61 +84,62 @@ if [ "$instruct" = "True" ]; then
 
 else
     # Base Tasks
-    accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
-        --tasks gsm8k --num_fewshot 5 ${common_args} \
-        --model_args "pretrained=${model_name_or_path},max_new_tokens=256,steps=256,block_size=256,cfg_scale=0.0"
+    # accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
+    #     --tasks gsm8k --num_fewshot 5 ${common_args} \
+    #     --model_args "pretrained=${model_name_or_path},max_new_tokens=256,steps=256,block_size=256,cfg_scale=0.0"
 
     accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
         --tasks bbh --num_fewshot 3 ${common_args} \
-        --model_args "pretrained=${model_name_or_path},max_new_tokens=256,steps=256,block_size=256,cfg_scale=0.0"
+        --model_args "pretrained=${model_name_or_path},max_new_tokens=256,steps=256,block_size=256,cfg_scale=0.0" --limit "${limit}" \
+        --log_samples --output_path ./logs/${model_name_or_path}_bbh_samples.json
 
-    accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
-        --tasks minerva_math --num_fewshot 4 ${common_args} \
-        --model_args "pretrained=${model_name_or_path},max_new_tokens=1024,steps=1024,block_size=1024,cfg_scale=0.0"
+    # accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
+    #     --tasks minerva_math --num_fewshot 4 ${common_args} \
+    #     --model_args "pretrained=${model_name_or_path},max_new_tokens=1024,steps=1024,block_size=1024,cfg_scale=0.0"
 
-    accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
-        --tasks humaneval --num_fewshot 0 ${common_args} \
-        --model_args "pretrained=${model_name_or_path},max_new_tokens=1024,steps=1024,block_size=1024,cfg_scale=0.0" \
-        --confirm_run_unsafe_code
+    # accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
+    #     --tasks humaneval --num_fewshot 0 ${common_args} \
+    #     --model_args "pretrained=${model_name_or_path},max_new_tokens=1024,steps=1024,block_size=1024,cfg_scale=0.0" \
+    #     --confirm_run_unsafe_code
 
-    accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
-        --tasks mbpp --num_fewshot 3 ${common_args} \
-        --model_args "pretrained=${model_name_or_path},max_new_tokens=1024,steps=1024,block_size=1024,cfg_scale=0.0" \
-        --confirm_run_unsafe_code
+    # accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
+    #     --tasks mbpp --num_fewshot 3 ${common_args} \
+    #     --model_args "pretrained=${model_name_or_path},max_new_tokens=1024,steps=1024,block_size=1024,cfg_scale=0.0" \
+    #     --confirm_run_unsafe_code
 
-    accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
-        --tasks gpqa_main_n_shot --num_fewshot 5 ${common_args} \
-        --model_args "pretrained=${model_name_or_path},mc_num=32,cfg_scale=0.5" --batch_size 32
+    # accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
+    #     --tasks gpqa_main_n_shot --num_fewshot 5 ${common_args} \
+    #     --model_args "pretrained=${model_name_or_path},mc_num=32,cfg_scale=0.5" --batch_size 32
 
-    accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
-        --tasks truthfulqa_mc2 --num_fewshot 0 ${common_args} \
-        --model_args "pretrained=${model_name_or_path},mc_num=32,cfg_scale=2.0" --batch_size 32
+    # accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
+    #     --tasks truthfulqa_mc2 --num_fewshot 0 ${common_args} \
+    #     --model_args "pretrained=${model_name_or_path},mc_num=32,cfg_scale=2.0" --batch_size 32
 
-    accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
-        --tasks arc_challenge --num_fewshot 0 ${common_args} \
-        --model_args "pretrained=${model_name_or_path},mc_num=32,cfg_scale=0.5" --batch_size 32
+    # accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
+    #     --tasks arc_challenge --num_fewshot 0 ${common_args} \
+    #     --model_args "pretrained=${model_name_or_path},mc_num=32,cfg_scale=0.5" --batch_size 32
 
-    accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
-        --tasks hellaswag --num_fewshot 0 ${common_args} \
-        --model_args "pretrained=${model_name_or_path},mc_num=32,cfg_scale=0.5" --batch_size 32
+    # accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
+    #     --tasks hellaswag --num_fewshot 0 ${common_args} \
+    #     --model_args "pretrained=${model_name_or_path},mc_num=32,cfg_scale=0.5" --batch_size 32
 
-    accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
-        --tasks winogrande --num_fewshot 5 ${common_args} \
-        --model_args "pretrained=${model_name_or_path},mc_num=32,cfg_scale=0.0" --batch_size 32
+    # accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
+    #     --tasks winogrande --num_fewshot 5 ${common_args} \
+    #     --model_args "pretrained=${model_name_or_path},mc_num=32,cfg_scale=0.0" --batch_size 32
 
-    accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
-        --tasks piqa --num_fewshot 0 ${common_args} \
-        --model_args "pretrained=${model_name_or_path},mc_num=32,cfg_scale=0.5" --batch_size 32
+    # accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
+    #     --tasks piqa --num_fewshot 0 ${common_args} \
+    #     --model_args "pretrained=${model_name_or_path},mc_num=32,cfg_scale=0.5" --batch_size 32
 
-    accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
-        --tasks mmlu --num_fewshot 5 ${common_args} \
-        --model_args "pretrained=${model_name_or_path},mc_num=1,cfg_scale=0.0" --batch_size 1
+    # accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
+    #     --tasks mmlu --num_fewshot 5 ${common_args} \
+    #     --model_args "pretrained=${model_name_or_path},mc_num=1,cfg_scale=0.0" --batch_size 1
 
-    accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
-        --tasks cmmlu --num_fewshot 5 ${common_args} \
-        --model_args "pretrained=${model_name_or_path},mc_num=32,cfg_scale=0.0" --batch_size 32
+    # accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
+    #     --tasks cmmlu --num_fewshot 5 ${common_args} \
+    #     --model_args "pretrained=${model_name_or_path},mc_num=32,cfg_scale=0.0" --batch_size 32
 
-    accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
-        --tasks ceval-valid --num_fewshot 5 ${common_args} \
-        --model_args "pretrained=${model_name_or_path},mc_num=32,cfg_scale=0.0" --batch_size 32
+    # accelerate launch --num_processes "${num_gpu}" dllm/pipelines/llada/eval.py \
+    #     --tasks ceval-valid --num_fewshot 5 ${common_args} \
+    #     --model_args "pretrained=${model_name_or_path},mc_num=32,cfg_scale=0.0" --batch_size 32
 fi
