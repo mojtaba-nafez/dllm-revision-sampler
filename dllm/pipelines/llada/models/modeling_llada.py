@@ -725,7 +725,6 @@ class LLaDABlock(nn.Module):
                 attention_bias = self_mask
             else:
                 attention_bias = attention_bias + self_mask
-
         # Get the attention scores.
         # shape: (B, nh, T, hs)
         att = self._scaled_dot_product_attention(
@@ -929,7 +928,7 @@ class LLaDALlamaBlock(LLaDABlock):
                 self.attention, q, k, v, attention_bias, layer_past=layer_past, use_cache=use_cache
             )
         else:
-            att, cache = self.attention(q, k, v, attention_bias, layer_past=layer_past, use_cache=use_cache)
+            att, cache = self.attention(q, k, v, attention_bias, layer_past=layer_past, use_cache=use_cache, revise_step=revise_step)
 
         # Add attention scores.
         # shape: (B, T, C)

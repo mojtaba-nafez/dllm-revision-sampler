@@ -77,3 +77,57 @@ runai resume dllm-sampler
 source /scratch/mnafez/miniconda3/bin/activate
 conda activate dllm
 ```
+
+
+
+
+# Tempral Command For Run
+
+
+
+```
+runai submit \
+  --name llada-instruct-baseline-sampling \
+  --image registry.rcp.epfl.ch/dllm-sampling/my-toolbox:v0.2 \
+  --gpu 1 \
+  --existing-pvc claimname=course-ee-628-scratch,path=/scratch \
+  --existing-pvc claimname=home,path=/home/mnafez \
+  --command -- bash -c "
+    source /scratch/mnafez/miniconda3/etc/profile.d/conda.sh && \
+    conda activate dllm && \
+    cd /scratch/mnafez/dllm-revision-sampler && \
+    bash examples/llada/eval.sh --model_name_or_path GSAI-ML/LLaDA-8B-Instruct --instruct True --limit 30
+  "
+```
+
+
+
+```
+runai submit \
+  --name llada-instruct-remasking-sampling-end \
+  --image registry.rcp.epfl.ch/dllm-sampling/my-toolbox:v0.2 \
+  --gpu 1 \
+  --existing-pvc claimname=course-ee-628-scratch,path=/scratch \
+  --existing-pvc claimname=home,path=/home/mnafez \
+  --command -- bash -c "
+    source /scratch/mnafez/miniconda3/etc/profile.d/conda.sh && \
+    conda activate dllm && \
+    cd /scratch/mnafez/dllm-revision-sampler && \
+    bash examples/llada/eval.sh --model_name_or_path GSAI-ML/LLaDA-8B-Instruct --instruct True --limit 30
+  "
+```
+
+```
+runai submit \
+  --name llada-instruct-gradualy-remasking-sampling \
+  --image registry.rcp.epfl.ch/dllm-sampling/my-toolbox:v0.2 \
+  --gpu 1 \
+  --existing-pvc claimname=course-ee-628-scratch,path=/scratch \
+  --existing-pvc claimname=home,path=/home/mnafez \
+  --command -- bash -c "
+    source /scratch/mnafez/miniconda3/etc/profile.d/conda.sh && \
+    conda activate dllm && \
+    cd /scratch/mnafez/dllm-revision-sampler && \
+    bash examples/llada/eval.sh --model_name_or_path GSAI-ML/LLaDA-8B-Instruct --instruct True --limit 30
+    "
+```

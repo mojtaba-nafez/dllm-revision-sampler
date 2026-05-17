@@ -6,8 +6,8 @@ Examples
 # Chat mode (multi-turn, chat template)
 python -u examples/llada/chat.py --model_name_or_path "YOUR_MODEL_PATH"
 
-python -u examples/llada/chat.py --model_name_or_path "GSAI-ML/LLaDA-8B-Instruct"
-python -u examples/llada/chat.py --model_name_or_path "GSAI-ML/LLaDA-8B-Base"
+python -u examples/llada/chat.py --model_name_or_path "GSAI-ML/LLaDA-8B-Instruct" --steps 128 --block_size 128 --max_new_tokens 128
+python -u examples/llada/chat.py --model_name_or_path "GSAI-ML/LLaDA-8B-Base" --steps 128 --block_size 128 --max_new_tokens 128
 
 # Raw single-turn sampling
 python -u examples/llada/chat.py --model_name_or_path "YOUR_MODEL_PATH" --chat_template False

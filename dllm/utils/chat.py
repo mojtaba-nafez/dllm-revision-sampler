@@ -159,8 +159,10 @@ def multi_turn_chat(sampler, sampler_config, visualize: bool):
         messages.append({"role": "user", "content": user_msg})
         inputs = build_chat_inputs(tokenizer, [messages], add_generation_prompt=True)
 
-        # outputs = sampler.sample(inputs, sampler_config, return_dict=True)
-        outputs = sampler.sampling_revising_by_remasking(inputs, sampler_config, return_dict=True)
+        outputs = sampler.sample(inputs, sampler_config, return_dict=True)
+        # outputs = sampler.sampling_revising_by_remasking(inputs, sampler_config, return_dict=True)
+        # outputs = sampler.infill_remask_independent(inputs, sampler_config, return_dict=True)
+        # outputs = sampler.sampling_revising_by_gradualy_remasking(inputs, sampler_config, return_dict=True)
         
         reply = dllm.utils.sample_trim(tokenizer, outputs.sequences.tolist(), inputs)[0]
 
